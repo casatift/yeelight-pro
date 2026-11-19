@@ -4,9 +4,8 @@ import ast
 import logging
 import asyncio
 import datetime
-import voluptuous as vol
-
 from homeassistant.core import HomeAssistant, State, callback
+import voluptuous as vol
 from homeassistant.const import (
     CONF_HOST,
     EVENT_HOMEASSISTANT_STOP,
@@ -22,12 +21,14 @@ from homeassistant.components import persistent_notification
 import homeassistant.helpers.device_registry as dr
 import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.service import async_register_admin_service
+from homeassistant.helpers.discovery import async_load_platform
+from homeassistant.exceptions import ConfigEntryNotReady
 
 
 from .core.const import *
 from .core.gateway import ProGateway
 from .core.device import XDevice, GatewayDevice, WifiPanelDevice
-from .core.converters.base import Converter
+from .core.converters.base import Converter, PropConv
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -71,7 +72,7 @@ async def async_setup(hass: HomeAssistant, hass_config: dict):
 
         await asyncio.gather(
             *[
-                hass.helpers.discovery.async_load_platform(domain, DOMAIN, gwc, gwc)
+                async_load_platform(hass, domain, DOMAIN, gwc, gwc)
                 for domain in SUPPORTED_DOMAINS
             ]
         )
@@ -86,7 +87,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry):
     await hass.config_entries.async_forward_entry_setups(entry, SUPPORTED_DOMAINS)
 
     if gtw := await get_gateway_from_config(hass, entry):
-        await gtw.start()
+        try:
+            await gtw.start()
+        except (ConnectionError, TimeoutError) as exc:
+            await gtw.stop()
+            raise ConfigEntryNotReady('Cannot connect to Yeelight Pro LAN gateway') from exc
 
     entry.async_on_unload(
         hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, gtw.stop)
@@ -155,18 +160,20 @@ class ComponentServices:
             hass, DOMAIN, SERVICE_RELOAD, self.handle_reload_config,
         )
 
-        hass.services.async_register(
-            DOMAIN, 'send_command', self.async_send_command,
+        async_register_admin_service(
+            hass, DOMAIN, 'send_command', self.async_send_command,
             schema=vol.Schema({
                 vol.Required(CONF_HOST): cv.string,
                 vol.Required('method'): cv.string,
                 vol.Optional('params', default=None): vol.Any(dict, None),
+                vol.Optional('nodes'): list,
+                vol.Optional('scenes'): list,
                 vol.Optional('throw', default=False): cv.boolean,
             }),
         )
 
-        hass.services.async_register(
-            DOMAIN, 'mock_incoming_message', self.async_mock_incoming_message,
+        async_register_admin_service(
+            hass, DOMAIN, 'mock_incoming_message', self.async_mock_incoming_message,
             schema=vol.Schema({
                 vol.Optional(CONF_HOST): cv.string,
                 vol.Required('message'): cv.string,
@@ -192,7 +199,7 @@ class ComponentServices:
         gip = dat.get(CONF_HOST)
         gtw = None
         for g in self.hass.data[DOMAIN][CONF_GATEWAYS].values():
-            if not isinstance(gtw, ProGateway):
+            if not isinstance(g, ProGateway):
                 continue
             if g.host == gip or not gip:
                 gtw = g
@@ -202,7 +209,10 @@ class ComponentServices:
             return False
         method = dat['method']
         params = dat.get('params')
-        rdt = await gtw.send(method, params=params, wait_result=True)
+        payload = {key: dat[key] for key in ('nodes', 'scenes') if key in dat}
+        if params is not None:
+            payload['params'] = params
+        rdt = await gtw.send(method, wait_result=True, **payload)
         if dat.get('throw', True):
             persistent_notification.async_create(
                 self.hass, f'{rdt}', 'Yeelight Pro command result', f'{DOMAIN}-debug',
@@ -262,7 +272,8 @@ class XEntity(Entity):
         self._name = conv.attr
         self._option = option or {}
         self._attr_name = f'{device.name} {conv.attr}'.strip()
-        self._attr_unique_id = f'{device.id}-{conv.attr}'
+        identity = device.id if device.nt in (2, -1) else f'{device.nt}-{device.id}'
+        self._attr_unique_id = f'{identity}-{conv.attr}'
         self.entity_id = device.entity_id(conv)
         self._attr_icon = self._option.get('icon')
         self._attr_entity_picture = self._option.get('picture')
@@ -273,19 +284,38 @@ class XEntity(Entity):
 
         via_device = None
         if not isinstance(device, (GatewayDevice, WifiPanelDevice)):
-            via_device = (DOMAIN, device.gateway.device.id)
+            via_device = (DOMAIN, str(device.gateway.device.id if device.gateway.device else device.gateway.host))
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.id)},
+            identifiers={(DOMAIN, str(device.id) if device.nt in (2, -1) else f'{device.nt}-{device.id}')},
             name=device.name,
-            model=device.pid or device.type or '',
+            model=str(device.pid or device.type or ''),
             via_device=via_device,
             sw_version=device.firmware_version,
             manufacturer=DEFAULT_NAME,
         )
         self._attr_extra_state_attributes = {}
+        if device.roomid is not None:
+            self._attr_extra_state_attributes['yeelight_room_id'] = str(device.roomid)
         self._vars = {}
         self.subscribed_attrs = device.subscribe_attrs(conv)
         device.entities[conv.attr] = self
+
+    @property
+    def available(self):
+        gateway = self.device.gateway
+        if not gateway or not gateway.connected:
+            return False
+        if isinstance(self.device, GatewayDevice):
+            return not self._name.endswith('_state') or self._name in self.device.observed_props
+        if not isinstance(self.device, WifiPanelDevice) and self.device.online is not True:
+            return False
+        conv = self.device.converters[self._name]
+        prop = conv.prop if isinstance(conv, PropConv) else None
+        if self._name == 'motor':
+            prop = 'cp'
+        if conv.domain == 'climate':
+            prop = f'{conv.channel}-acp'
+        return not prop or prop in self.device.observed_props
 
     async def async_added_to_hass(self):
         """Run when entity about to be added to hass."""

@@ -63,8 +63,7 @@ class XNumberEntity(XEntity, NumberEntity):
         kwargs = {
             self._name: value,
         }
-        if ret := await self.device_send_props(kwargs):
-            self._attr_native_value = value
+        ret = await self.device_send_props(kwargs)
         return ret
 
 

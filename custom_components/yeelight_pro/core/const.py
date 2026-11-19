@@ -13,6 +13,7 @@ SUPPORTED_DOMAINS = [
     'binary_sensor',
     'cover',
     'climate',
+    'select',
 ]
 
 PID_GATEWAY = 1

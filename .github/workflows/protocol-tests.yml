@@ -1,0 +1,17 @@
+name: LAN protocol tests
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  home-assistant:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test against Home Assistant 2026.11.2
+        run: >-
+          docker run --rm --entrypoint python
+          -v "$GITHUB_WORKSPACE:/work" -w /work
+          ghcr.io/home-assistant/home-assistant:2026.11.2
+          -m unittest discover -s tests -p test_protocol_v24.py -v

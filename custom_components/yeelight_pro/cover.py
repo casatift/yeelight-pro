@@ -8,6 +8,7 @@ from homeassistant.components.cover import (
     DOMAIN as ENTITY_DOMAIN,
     ATTR_POSITION,
     ATTR_CURRENT_POSITION,
+    CoverEntityFeature,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
 
@@ -40,6 +41,8 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 class XCoverEntity(XEntity, CoverEntity, RestoreEntity):
     _attr_is_closed = None
+    _attr_supported_features = (CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE |
+                                CoverEntityFeature.STOP | CoverEntityFeature.SET_POSITION)
 
     @callback
     def async_set_state(self, data: dict):
@@ -47,16 +50,18 @@ class XCoverEntity(XEntity, CoverEntity, RestoreEntity):
             self._attr_state = data['run_state']
             self._attr_is_opening = self._attr_state == CoverState.OPENING
             self._attr_is_closing = self._attr_state == CoverState.CLOSING
-        if ATTR_POSITION in data:
-            self._attr_current_cover_position = data[ATTR_POSITION]
-            self._attr_is_closed = self._attr_current_cover_position <= 3
+        # tp is a requested target, not a position observation (v2.4 p21).
+        if 'current_position' in data:
+            self._attr_current_cover_position = data['current_position']
+            self._attr_is_closed = (None if data['current_position'] is None
+                                    else data['current_position'] <= 3)
 
     @callback
     def async_restore_last_state(self, state: str, attrs: dict):
         if state:
             self.async_set_state({'run_state': state})
         if ATTR_CURRENT_POSITION in attrs:
-            self.async_set_state({ATTR_POSITION: attrs[ATTR_CURRENT_POSITION]})
+            self.async_set_state({'current_position': attrs[ATTR_CURRENT_POSITION]})
 
     async def async_open_cover(self, **kwargs):
         kwargs[ATTR_POSITION] = 100

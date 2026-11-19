@@ -1,11 +1,11 @@
 {
   "domain": "yeelight_pro",
   "name": "Yeelight Pro",
-  "codeowners": ["@al-one"],
+  "codeowners": ["@casatift", "@al-one"],
   "config_flow": true,
-  "documentation": "https://github.com/hasscc/yeelight-pro",
+  "documentation": "https://github.com/casatift/yeelight-pro",
   "iot_class": "local_push",
-  "issue_tracker": "https://github.com/hasscc/yeelight-pro/issues",
+  "issue_tracker": "https://github.com/casatift/yeelight-pro/issues",
   "requirements": [],
-  "version": "0.0.1"
+  "version": "0.1.0"
 }

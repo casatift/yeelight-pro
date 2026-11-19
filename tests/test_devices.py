@@ -4,7 +4,7 @@ from homeassistant.core import HomeAssistant
 from custom_components.yeelight_pro.core.device import (
     XDevice,
     LightDevice,
-    RelayDevice,
+    RelayDoubleDevice,
     SwitchPanelDevice,
 )
 from .test_gateway import get_gateway
@@ -40,7 +40,7 @@ def test_light():
 def test_relay():
     node = {"id": 1273, "nt": 2, "n": "双路继电器", "type": 7}
     device = asyncio.run(XDevice.from_node(gateway, node))
-    assert isinstance(device, RelayDevice)
+    assert isinstance(device, RelayDoubleDevice)
 
     prop = {
         "id": 1273, "nt": 2, "pid": 0, "pt": 7, "o": True,

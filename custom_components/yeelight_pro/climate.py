@@ -54,13 +54,13 @@ class XClimateEntity(XEntity, ClimateEntity, RestoreEntity):
         super().__init__(device, conv, option)
         self.mode = None
         self.is_on = False
+        self.prefix = '' if conv.channel == 1 else f'ch{conv.channel}_'
 
         # https://developers.home-assistant.io/docs/core/entity/climate#supported-features
         self._attr_hvac_modes = [
             HVACMode.OFF,
             HVACMode.HEAT,
             HVACMode.COOL,
-            HVACMode.DRY,
             HVACMode.FAN_ONLY,
         ]
         self._attr_fan_modes = [
@@ -76,13 +76,20 @@ class XClimateEntity(XEntity, ClimateEntity, RestoreEntity):
 
         self._attr_hvac_mode = HVACMode.OFF
         self._attr_fan_mode = None
-        self._attr_temperature_unit = self.hass.config.units.temperature_unit
+        self._attr_native_temperature_unit = '°C'
+        self._attr_min_temp = 16
+        self._attr_max_temp = 32
         self._attr_target_temperature_step = 1
 
     @callback
     def async_set_state(self, data: dict):
-        for k, v in data.items():
-            setattr(self, k, v)
+        for name in ('is_on', 'mode'):
+            if self.prefix+name in data:
+                setattr(self, name, data[self.prefix+name])
+        for name in ('current_temperature', 'target_temperature', 'fan_mode'):
+            if self.prefix+name in data:
+                attr = '_attr_'+name if name == 'fan_mode' else '_attr_native_'+name
+                setattr(self, attr, data[self.prefix+name])
         self._attr_hvac_mode = self.mode if self.is_on else HVACMode.OFF
         
 
@@ -93,7 +100,7 @@ class XClimateEntity(XEntity, ClimateEntity, RestoreEntity):
     async def async_set_temperature(self, **kwargs):
         """Set new target temperature."""
         kwargs['target_temperature'] = kwargs['temperature']
-        await self.device_send_props(kwargs)
+        await self.send_channel(kwargs)
 
     async def async_set_hvac_mode(self, hvac_mode, **kwargs):
         """Set new target hvac mode."""
@@ -103,19 +110,28 @@ class XClimateEntity(XEntity, ClimateEntity, RestoreEntity):
             kwargs['is_on'] = True
             kwargs['mode'] = hvac_mode
 
-        await self.device_send_props(kwargs)
+        await self.send_channel(kwargs)
     
     async def async_set_fan_mode(self, fan_mode, **kwargs):
         """Set new target fan mode."""
         kwargs['fan_mode'] = fan_mode
-        await self.device_send_props(kwargs)
+        await self.send_channel(kwargs)
     
     async def async_turn_on(self, **kwargs):
         """Turn the entity on."""
         kwargs['is_on'] = True
-        await self.device_send_props(kwargs)
+        await self.send_channel(kwargs)
 
     async def async_turn_off(self, **kwargs):
         """Turn the entity off."""
         kwargs['is_on'] = False
-        await self.device_send_props(kwargs)
+        await self.send_channel(kwargs)
+
+    async def send_channel(self, kwargs):
+        return await self.device_send_props({self.prefix+key: value for key, value in kwargs.items()})
+
+    @property
+    def available(self):
+        channel = self.device.converters[self._name].channel
+        online = self.device.prop_params.get(f'{channel}-aco')
+        return super().available and online is not False

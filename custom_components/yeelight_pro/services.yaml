@@ -24,6 +24,14 @@ send_command:
       example: true
       selector:
         boolean:
+    nodes:
+      description: Protocol-native node array for set/adjust/toggle/action or virtual events
+      selector:
+        object:
+    scenes:
+      description: Protocol-native scene array with optional duration/delay in milliseconds
+      selector:
+        object:
 
 mock_incoming_message:
   description: Send command to gateway

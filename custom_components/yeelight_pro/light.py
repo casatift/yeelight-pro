@@ -83,7 +83,7 @@ class XLightEntity(XEntity, LightEntity):
         if self.target_task:
             self.target_task.cancel()
         diff = time.time() - self._target_attrs.get('time', 0)
-        delay = float(self._target_attrs.get(ATTR_TRANSITION) or 5)
+        delay = float(self._target_attrs.get(ATTR_TRANSITION) or 0)
 
         async def set_state():
             await asyncio.sleep(delay - diff + 0.01)
@@ -139,9 +139,7 @@ class XLightEntity(XEntity, LightEntity):
         """Turn the entity on/off."""
         kwargs[self._name] = on
         ret = await self.device_send_props(kwargs)
-        if ret:
-            self._attr_is_on = on
-            self.async_write_ha_state()
+        # ACK means the gateway accepted the command. State comes from push.
         return ret
 
     async def async_will_remove_from_hass(self):

@@ -17,6 +17,8 @@ class Converter:
 
     enabled: Optional[bool] = True  # support: True, False, None (lazy setup)
     poll: bool = False  # hass should_poll
+    writable: bool = True
+    channel: int = 1
 
     # don't init with dataclass because no type:
     childs = None  # set or dict? of children attributes
@@ -25,6 +27,8 @@ class Converter:
         payload[self.attr] = value
 
     def encode(self, device: "XDevice", payload: dict, value: Any):
+        if not self.writable:
+            raise ValueError(f'{self.prop or self.attr} is read-only')
         payload[self.prop or self.attr] = value
 
     def read(self, device: "XDevice", payload: dict):
@@ -34,7 +38,7 @@ class Converter:
 
 class BoolConv(Converter):
     def decode(self, device: "XDevice", payload: dict, value: Union[bool, int]):
-        payload[self.attr] = bool(value)
+        payload[self.attr] = None if value is None else bool(value)
 
     def encode(self, device: "XDevice", payload: dict, value: Union[bool, int]):
         super().encode(device, payload, bool(value))
@@ -85,6 +89,24 @@ class PropMapConv(MapConv, PropConv):
 
 
 @dataclass
+class NumericConv(PropConv):
+    min: float = 0
+    max: float = 100
+    step: float = 1
+    scale: float = 1
+
+    def decode(self, device, payload, value):
+        payload[self.attr] = None if value is None else value * self.scale
+
+    def encode(self, device, payload, value):
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(f'{self.attr} requires a number')
+        if not self.min <= value <= self.max:
+            raise ValueError(f'{self.attr} outside {self.min}..{self.max}')
+        super().encode(device, payload, round(value / self.scale))
+
+
+@dataclass
 class BrightnessConv(PropConv):
     max: float = 100.0
 
@@ -92,14 +114,14 @@ class BrightnessConv(PropConv):
         payload[self.attr] = round(value / self.max * 255.0)
 
     def encode(self, device: "XDevice", payload: dict, value: float):
-        value = round(value / 255.0 * self.max)
+        value = max(1, min(100, round(value / 255.0 * self.max)))
         super().encode(device, payload, int(value))
 
 
 @dataclass
 class ColorTempKelvin(PropConv):
     # 1600..6500 => 370..153
-    mink: int = 1600
+    mink: int = 2700
     maxk: int = 6500
 
     def decode(self, device: "XDevice", payload: dict, value: int):
@@ -133,7 +155,9 @@ class EventConv(Converter):
         key, val = self.attr, None
         if "." in self.attr:
             key, val = self.attr.split(".", 1)
-        if key in ["motion", "contact"]:
+        if self.attr in ['contact.alarm', 'contact.normal']:
+            payload['tamper'] = self.attr == 'contact.alarm'
+        elif key in ["motion", "contact", "approach"]:
             payload.update(
                 {
                     key: val in ["true", "open"],
@@ -171,6 +195,8 @@ class EventConv(Converter):
                         **value,
                     }
                 )
+        elif self.attr == 'handwave':
+            payload.update({'action': 'handwave', 'event': 'handwave', **value})
 
     def encode(self, device: "XDevice", payload: dict, value: dict):
         super().encode(device, payload, value)
@@ -186,17 +212,9 @@ class MotorConv(Converter):
 
     def encode(self, device: "XDevice", payload: dict, value: Any):
         if value is not None:
-            super().encode(
-                device,
-                payload,
-                {
-                    "action": {
-                        "motorAdjust": {
-                            "type": value,
-                        },
-                    },
-                },
-            )
+            if value not in {'pause', 'toggle', 'continue', 'auto', 'openOrPause', 'closeOrPause'}:
+                raise ValueError('Unsupported motor action')
+            payload.setdefault('action', {})['motorAdjust'] = {'type': value}
 
 
 @dataclass

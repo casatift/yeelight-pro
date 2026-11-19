@@ -51,6 +51,9 @@ class DeviceType(IntEnum):
     MOTION_WITH_LIGHT = 134
     ILLUMINATION_SENSOR = 135
     TEMPERATURE_HUMIDITY = 136
+    MAIRUI_MOTION = 138
+    BATH_HEATER = 2049
+    TOF = 2052
 
 
 DEVICE_TYPE_LIGHTS = [
@@ -70,11 +73,13 @@ class XDevice:
         self.id = int(node['id'])
         self.nt = node.get('nt', 0)
         self.pid = node.get('pid')
-        self.type = node.get('type', 0)
+        self.type = node.get('type', node.get('pt', 0))
         self.name = node.get('n', '')
-        self.cids = node.get('cids')
+        self.cids = node.get('cids') or []
         self.ch_num = node.get('ch_num')
+        self.roomid = node.get('roomid')
         self.prop = {}
+        self.observed_props = set()
         self.entities: Dict[str, "XEntity"] = {}
         self.gateways: List["ProGateway"] = []
         self.converters = {}
@@ -96,9 +101,16 @@ class XDevice:
             return None
         if not (nid := node.get('id')):
             return None
-        if dvc := gateway.devices.get(nid):
+        if dvc := gateway.devices.get(gateway.node_key(nid, node.get('nt', 2))):
             if n := node.get('n'):
                 dvc.name = n
+            for key in ('pid', 'ch_num', 'roomid'):
+                if key in node:
+                    setattr(dvc, key, node[key])
+            if 'cids' in node:
+                dvc.cids = node['cids'] or []
+            dvc.setup_converters()
+            await dvc.setup_entities()
         else:
             dvc = XDevice(node)
             if dvc.nt in [NodeType.SCENE]:
@@ -116,13 +128,21 @@ class XDevice:
                 dvc = KnobDevice(node)                  
             elif dvc.type in [DeviceType.KNOB]:
                 dvc = KnobDevice(node)
-            elif dvc.type in [DeviceType.MOTION_SENSOR, DeviceType.MOTION_WITH_LIGHT]:
+            elif dvc.type in [DeviceType.MOTION_SENSOR, DeviceType.MOTION_WITH_LIGHT, DeviceType.MAIRUI_MOTION]:
                 dvc = MotionDevice(node)
+            elif dvc.type == DeviceType.ILLUMINATION_SENSOR:
+                dvc = IlluminanceDevice(node)
+            elif dvc.type == DeviceType.TEMPERATURE_HUMIDITY:
+                dvc = TemperatureHumidityDevice(node)
+            elif dvc.type == DeviceType.TOF:
+                dvc = TofDevice(node)
+            elif dvc.type == DeviceType.BATH_HEATER:
+                dvc = BathHeaterDevice(node)
             elif dvc.type in [DeviceType.MAGNET_SENSOR]:
                 dvc = ContactDevice(node)
             elif dvc.type in [DeviceType.CURTAIN]:
                 dvc = CoverDevice(node)
-            elif dvc.type in [DeviceType.AIR_CONDITIONER]:
+            elif dvc.type in [DeviceType.AIR_CONDITIONER, DeviceType.VRF]:
                 dvc = ClimateDevice(node)
             else:
                 _LOGGER.warning('Unsupported device: %s', node)
@@ -136,26 +156,32 @@ class XDevice:
     async def from_nodes(gateway: "ProGateway", nodes: List[dict]):
         dls = []
         for node in nodes:
-            if (dvc := XDevice.from_node(gateway, node)) is None:
+            if (dvc := await XDevice.from_node(gateway, node)) is None:
                 continue
             dls.append(dvc)
         return dls
 
     async def prop_changed(self, data: dict):
-        has_new = False
-        for k in data.keys():
-            if k not in self.prop:
-                has_new = True
-                break
+        # v2.4 p8: a push may contain only the properties that changed.
+        params = {**self.prop_params, **(data.get('params') or {})}
         self.prop.update(data)
-        if has_new:
-            self.setup_converters()
-            await self.setup_entities()
+        self.prop['params'] = params
+        self.observed_props.update((data.get('params') or {}).keys())
+        if 'pid' in data:
+            self.pid = data['pid']
+        self.setup_converters()
+        await self.setup_entities()
         self.update(self.decode(data))
 
     async def event_fired(self, data: dict):
         decoded = self.decode_event(data)
         self.update(decoded)
+        if self.hass:
+            self.hass.bus.async_fire('yeelight_pro_event', {
+                'entry_id': self.gateway.entry_id, 'node_id': self.id, 'nt': self.nt,
+                'event': (data.get('value') or data.get('type') or '').strip(),
+                'params': data.get('params') or {},
+            })
         _LOGGER.debug('Event fired: %s', [data, decoded])
 
     @property
@@ -178,7 +204,7 @@ class XDevice:
 
     @property
     def unique_id(self):
-        return f'{self.type}_{self.id}'
+        return f'{self.type}_{self.id}' if self.nt == 2 else f'{self.nt}_{self.type}_{self.id}'
 
     def entity_id(self, conv: Converter):
         return f'{conv.domain}.yp{self.unique_id}_{conv.attr}'
@@ -194,7 +220,6 @@ class XDevice:
                 continue
             if conv.attr in self.entities:
                 continue
-            await asyncio.sleep(1)  # wait for setup
             await gateway.setup_entity(domain, self, conv)
 
     def subscribe_attrs(self, conv: Converter):
@@ -207,6 +232,8 @@ class XDevice:
     def decode(self, value: dict) -> dict:
         """Decode device props for HA."""
         payload = {}
+        if 'o' in value:
+            payload['available'] = value['o'] is True
         for conv in self.converters.values():
             prop = conv.prop or conv.attr
             data = value
@@ -220,7 +247,7 @@ class XDevice:
     def decode_event(self, data: dict) -> dict:
         """Decode device event for HA."""
         payload = {}
-        event = data.get('value') or data.get('type')
+        event = (data.get('value') or data.get('type') or '').strip()
         if conv := self.converters.get(event):
             value = data.get('params') or {}
             conv.decode(self, payload, value)
@@ -254,7 +281,7 @@ class XDevice:
         attrs = value.keys()
 
         for entity in self.entities.values():
-            if not (entity.subscribed_attrs & attrs):
+            if not (entity.subscribed_attrs & attrs) and 'available' not in value:
                 continue
             entity.async_set_state(value)
             if entity.added:
@@ -288,11 +315,18 @@ class GatewayDevice(XDevice):
         self.id = gateway.host
         self.name = 'Yeelight Pro'
 
+    def setup_converters(self):
+        self.add_converter(Converter('connection', 'binary_sensor', writable=False, device_class='connectivity'))
+
     async def add_scene(self, node: dict):
         if not (nid := node.get('id')):
             return
         self.add_converter(SceneConv(f'scene_{nid}', 'button', node=node))
+        self.add_converter(Converter(f'scene_{nid}_state', 'sensor', writable=False))
         await self.setup_entities()
+        if state := (node.get('params') or {}).get('state'):
+            self.observed_props.add(f'scene_{nid}_state')
+            self.update({f'scene_{nid}_state': state})
 
     def entity_id(self, conv: Converter):
         return f'{conv.domain}.yp_{conv.attr}'
@@ -312,7 +346,7 @@ class LightDevice(XDevice):
         if ColorMode.RGB in self.color_modes:
             self.add_converter(ColorRgbConv('rgb_color', prop='c', parent='light'))
         if self.type == DeviceType.LIGHT_WITH_ZOOM_CT:
-            self.add_converter(PropConv('angel', 'number'))
+            self.add_converter(NumericConv('angle', 'number', prop='angle', min=0, max=255))
 
     @property
     def color_modes(self):
@@ -321,13 +355,15 @@ class LightDevice(XDevice):
         }
         if self.type == DeviceType.LIGHT_WITH_BRIGHTNESS:
             modes.add(ColorMode.BRIGHTNESS)
-        if self.type == DeviceType.LIGHT_WITH_COLOR_TEMP:
+        if self.type in [DeviceType.LIGHT_WITH_COLOR_TEMP, DeviceType.LIGHT_WITH_ZOOM_CT]:
             modes.add(ColorMode.BRIGHTNESS)
             modes.add(ColorMode.COLOR_TEMP)
         if self.type == DeviceType.LIGHT_WITH_COLOR:
             modes.add(ColorMode.BRIGHTNESS)
             modes.add(ColorMode.COLOR_TEMP)
             modes.add(ColorMode.RGB)
+        if 72 in self.cids:
+            modes.discard(ColorMode.COLOR_TEMP)
         return modes
 
 
@@ -360,7 +396,7 @@ class RelayDevice(XDevice):
     @property
     def switches(self):
         lst = {}
-        for i in range(1, 9):
+        for i in range(1, min(64, self.ch_num or 8) + 1):
             if (p := self.switch_power(i)) is None:
                 continue
             lst[i] = p
@@ -406,7 +442,7 @@ class MotionDevice(XDevice):
     def setup_converters(self):
         super().setup_converters()
         self.add_converter(Converter('motion', 'binary_sensor'))
-        self.add_converters(PropBoolConv('motion', 'binary_sensor', prop="mv"))
+        self.add_converters(PropBoolConv('motion', 'binary_sensor', prop='mv', writable=False, device_class='motion'))
         self.add_converter(EventConv('motion.true'))
         self.add_converter(EventConv('motion.false'))
         if self.type in [DeviceType.MOTION_WITH_LIGHT]:
@@ -414,7 +450,7 @@ class MotionDevice(XDevice):
         
         # This is a presence sensor with a built-in light sensor. Its type is still defined as 129,
         # so we can only temporarily distinguish it by the `cids` value.
-        if 73 in self.cids:
+        if self.type == DeviceType.MAIRUI_MOTION or set(self.cids) & {10, 69, 73} or 'luminance' in self.prop_params:
             # Regular presence sensors use cids = [9], while ceiling-mounted sensors with light detection use cids = [73].
             self.add_converter(PropConv(
                     attr='luminance',
@@ -422,7 +458,12 @@ class MotionDevice(XDevice):
                     prop='luminance',
                     unit_of_measurement='lx',
                     device_class='illuminance'
+                    ,writable=False
             ))
+        if self.type == DeviceType.MAIRUI_MOTION or 73 in self.cids:
+            self.add_converter(Converter('approach', 'binary_sensor', writable=False, device_class='occupancy'))
+            self.add_converter(EventConv('approach.true'))
+            self.add_converter(EventConv('approach.false'))
 
             # Currently, `approach.true` and `approach.false` seem to behave the same as `mv` (motion).
 
@@ -430,9 +471,12 @@ class MotionDevice(XDevice):
 class ContactDevice(XDevice):
     def setup_converters(self):
         super().setup_converters()
-        self.add_converter(Converter('contact', 'binary_sensor'))
+        self.add_converter(PropMapConv('contact', 'binary_sensor', prop='dc', map={0: True, 1: False}, writable=False, device_class='door'))
+        self.add_converter(PropBoolConv('tamper', 'binary_sensor', prop='alm', writable=False, device_class='tamper'))
         self.add_converter(EventConv('contact.open'))
         self.add_converter(EventConv('contact.close'))
+        self.add_converter(EventConv('contact.alarm'))
+        self.add_converter(EventConv('contact.normal'))
 
 
 class CoverDevice(XDevice):
@@ -440,11 +484,15 @@ class CoverDevice(XDevice):
         super().setup_converters()
         self.add_converters(
             MotorConv('motor', 'cover'),
-            PropConv('position', parent='motor', prop='tp'),
-            PropConv('current_position', parent='motor', prop='cp'),
+            NumericConv('position', parent='motor', prop='tp', min=0, max=100),
+            PropConv('current_position', parent='motor', prop='cp', writable=False),
         )
         if 'rs' in self.prop_params:
-            self.add_converter(PropBoolConv('reverse', 'switch', prop='rs'))
+            self.add_converter(PropBoolConv('route_calibrated', 'binary_sensor', prop='rs', writable=False))
+        if 39 in self.cids or set(self.prop_params) & {'cra', 'tra', 'trs'}:
+            self.add_converter(NumericConv('target_angle', 'number', prop='tra', min=0, max=180, unit_of_measurement='°'))
+            self.add_converter(PropConv('current_angle', 'sensor', prop='cra', writable=False, unit_of_measurement='°'))
+            self.add_converter(PropBoolConv('tilt_calibrated', 'binary_sensor', prop='trs', writable=False))
 
 
 class WifiPanelDevice(RelayDoubleDevice):
@@ -471,22 +519,63 @@ class WifiPanelDevice(RelayDoubleDevice):
 class ClimateDevice(XDevice):
     def setup_converters(self):
         super().setup_converters()
-        self.add_converter(Converter('climate', 'climate'))
-        self.add_converter(PropBoolConv('is_on', parent='climate', prop='1-acp'))
-        self.add_converter(PropConv('current_temperature', parent='climate', prop='1-acct'))
-        self.add_converter(PropConv('target_temperature', parent='climate', prop='1-actt'))
-        self.add_converter(PropMapConv('mode', parent='climate', prop='1-acm', map={
-            1: HVACMode.COOL,
-            2: HVACMode.DRY,
-            4: HVACMode.FAN_ONLY,
-            8: HVACMode.HEAT
-        }))
-        self.add_converter(PropMapConv('fan_mode', parent='climate', prop='1-acf', map={
-            1: FAN_HIGH,
-            2: FAN_MEDIUM,
-            4: FAN_LOW
-        }))
-        
-        # NYI
-        # acd: Air conditioner delay switch remaining time (unit: milliseconds)
-        # aco: Whether the air conditioner is online (air conditioner online status)
+        channels = {int(key.split('-')[0]) for key in self.prop_params
+                    if '-' in key and key.split('-')[0].isdigit() and key.endswith('-acp')}
+        channels.update(range(1, min(64, self.ch_num or 1) + 1))
+        for index in sorted(channels):
+            parent = 'climate' if index == 1 else f'climate_{index}'
+            prefix = '' if index == 1 else f'ch{index}_'
+            self.add_converter(Converter(parent, 'climate', channel=index))
+            self.add_converter(PropBoolConv(prefix+'is_on', parent=parent, prop=f'{index}-acp'))
+            self.add_converter(PropConv(prefix+'current_temperature', parent=parent, prop=f'{index}-acct', writable=False))
+            self.add_converter(NumericConv(prefix+'target_temperature', parent=parent, prop=f'{index}-actt', min=16, max=32))
+            self.add_converter(PropMapConv(prefix+'mode', parent=parent, prop=f'{index}-acm', map={
+                1: HVACMode.COOL, 4: HVACMode.FAN_ONLY, 8: HVACMode.HEAT}))
+            self.add_converter(PropMapConv(prefix+'fan_mode', parent=parent, prop=f'{index}-acf', map={
+                1: FAN_HIGH, 2: FAN_MEDIUM, 4: FAN_LOW}))
+            self.add_converter(PropBoolConv(prefix+'online', 'binary_sensor', parent=parent, prop=f'{index}-aco', writable=False, device_class='connectivity'))
+            self.add_converter(NumericConv(prefix+'delay_remaining', 'number', prop=f'{index}-acd', min=1, max=43200000, unit_of_measurement='ms'))
+            self.add_converter(NumericConv(prefix+'deflector', 'number', prop=f'{index}-acdfltr', min=0, max=255))
+            self.add_converter(PropBoolConv(prefix+'remote_control', 'switch', prop=f'{index}-acrc'))
+
+
+class IlluminanceDevice(XDevice):
+    def setup_converters(self):
+        self.add_converter(PropConv('luminance', 'sensor', prop='luminance', writable=False,
+                                    unit_of_measurement='lx', device_class='illuminance'))
+
+
+class TemperatureHumidityDevice(XDevice):
+    def setup_converters(self):
+        self.add_converter(NumericConv('temperature', 'sensor', prop='t', writable=False,
+            scale=0.01, min=-10, max=50, unit_of_measurement='°C', device_class='temperature'))
+        self.add_converter(PropConv('humidity', 'sensor', prop='h', writable=False,
+                                    unit_of_measurement='%', device_class='humidity'))
+
+
+class TofDevice(ActionDevice):
+    def setup_converters(self):
+        super().setup_converters()
+        self.add_converter(EventConv('handwave'))
+
+
+class BathModeConv(PropMapConv):
+    def encode(self, device, payload, value):
+        if value == 'other':
+            raise ValueError('bhm=5 is report-only, not a writable heating mode')
+        super().encode(device, payload, value)
+
+
+class BathHeaterDevice(XDevice):
+    def setup_converters(self):
+        self.add_converter(PropBoolConv('power', 'switch', prop='p'))
+        self.add_converter(BathModeConv('heating_mode', 'select', prop='bhm', map={
+            1: 'dry', 2: 'defog', 3: 'rapid_defog', 4: 'rapid_heat', 5: 'other'}))
+        self.add_converter(PropConv('reported_heating_mode', 'sensor', prop='bhm', writable=False))
+        self.add_converter(NumericConv('delay_off', 'number', prop='do', min=1, max=120, unit_of_measurement='min'))
+        for attr, prop in [('ventilation', 've'), ('fan', 'fa'), ('heat', 'he')]:
+            self.add_converter(NumericConv(attr, 'number', prop=prop, min=0, max=3))
+        self.add_converter(NumericConv('target_temperature', 'number', prop='tgt', min=0, max=50, unit_of_measurement='°C'))
+        # Bath heater t is in degrees Celsius; only type 136 scales t by 100.
+        self.add_converter(PropConv('temperature', 'sensor', prop='t', writable=False,
+                                    unit_of_measurement='°C', device_class='temperature'))
