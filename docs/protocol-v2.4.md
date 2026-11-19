@@ -26,7 +26,7 @@ property values fresh. There is no automatic replay of writes after reconnect.
 Events also emit `yeelight_pro_event` with `entry_id`, `node_id`, `nt`, `event` and
 `params`, so repeated identical panel/knob/handwave events remain observable.
 
-## Smart low-voltage cabinet extension (0.1.1)
+## E-series smart low-voltage cabinet / E 系列智能弱电箱 (0.1.1+)
 
 This is an observed extension, not a claim that protocol v2.4 documents these
 types. Product `17000064` reports the following virtual endpoints in
