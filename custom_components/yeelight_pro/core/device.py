@@ -2,6 +2,7 @@ import asyncio
 import logging
 from enum import IntEnum
 from .converters.base import *
+from .cabinet import cabinet_endpoint_kind
 
 from typing import Dict, List, TYPE_CHECKING
 
@@ -117,6 +118,8 @@ class XDevice:
                 if isinstance(gateway.device, GatewayDevice):
                     await gateway.device.add_scene(node)
                 return gateway.device
+            elif cabinet_endpoint_kind(node):
+                dvc = CabinetEndpointDevice(node)
             elif dvc.type in DEVICE_TYPE_LIGHTS:
                 dvc = LightDevice(node)
             elif dvc.type in [DeviceType.SWITCH_PANEL]:
@@ -330,6 +333,36 @@ class GatewayDevice(XDevice):
 
     def entity_id(self, conv: Converter):
         return f'{conv.domain}.yp_{conv.attr}'
+
+
+class CabinetEndpointDevice(XDevice):
+    """Verified cabinet endpoints share one physical HA device, not command IDs."""
+
+    @property
+    def cabinet_kind(self):
+        return cabinet_endpoint_kind({'id': self.id, 'nt': self.nt,
+                                      'pid': self.pid, 'type': self.type})
+
+    @property
+    def physical_device_id(self):
+        return f'cabinet_{self.id & ((1 << 56) - 1)}'
+
+    @property
+    def physical_device_name(self):
+        # Virtual endpoint names end in -1/-2/-6/-7 in the gateway push.
+        suffix = f'-{self.id >> 56}'
+        return self.name[:-len(suffix)] if self.name.endswith(suffix) else self.name or 'Smart low-voltage cabinet'
+
+    def setup_converters(self):
+        kind = self.cabinet_kind
+        if kind in ('light', 'fan'):
+            self.add_converter(PropBoolConv(kind, kind, prop='p'))
+        elif kind == 'temperature':
+            self.add_converter(NumericConv(kind, 'sensor', prop='t', writable=False,
+                scale=0.01, min=-50, max=125, unit_of_measurement='°C', device_class='temperature'))
+        elif kind == 'humidity':
+            self.add_converter(NumericConv(kind, 'sensor', prop='h', writable=False,
+                scale=0.01, min=0, max=100, unit_of_measurement='%', device_class='humidity'))
 
 
 class LightDevice(XDevice):

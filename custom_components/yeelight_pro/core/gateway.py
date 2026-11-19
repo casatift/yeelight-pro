@@ -6,6 +6,7 @@ import logging
 from .const import PID_WIFI_PANEL
 from .device import XDevice, GatewayDevice, WifiPanelDevice
 from .protocol import validate_command
+from .cabinet import cabinet_endpoint_kind
 
 _LOGGER = logging.getLogger(__name__)
 MSG_SPLIT = b'\r\n'
@@ -178,9 +179,12 @@ class ProGateway:
             nt = node.get('nt', 4 if 'groups' in dat else 2)
             key = self.node_key(node['id'], nt)
             device = self.devices.get(key)
-            # Unlisted internal gateway endpoints may appear in pushes. Only
-            # enumerate topology or explicit get.node/group responses.
-            if topology or (not device and cmd is None and ('type' in node or 'pt' in node)):
+            # The verified cabinet omits virtual endpoints from topology/get.node.
+            # Admit only its exact product/channel/type/property contract.
+            cabinet_push = (cmd == 'gateway_post.prop' and
+                            cabinet_endpoint_kind(node, require_value=True))
+            if topology or (not device and (cabinet_push or
+                    (cmd is None and ('type' in node or 'pt' in node)))):
                 if self.pid == PID_WIFI_PANEL:
                     device = self.device
                 else:

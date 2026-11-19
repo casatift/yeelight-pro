@@ -26,7 +26,32 @@ property values fresh. There is no automatic replay of writes after reconnect.
 Events also emit `yeelight_pro_event` with `entry_id`, `node_id`, `nt`, `event` and
 `params`, so repeated identical panel/knob/handwave events remain observable.
 
-## Migration
+## Smart low-voltage cabinet extension (0.1.1)
+
+This is an observed extension, not a claim that protocol v2.4 documents these
+types. Product `17000064` reports the following virtual endpoints in
+`gateway_post.prop`, although they are absent from topology and the all-node
+query. App operations confirmed the two power transitions; the displayed
+temperature/humidity confirmed both scales. The fan is on/off only in the app.
+
+| High byte of virtual ID | Type | Property | HA capability |
+| --- | --- | --- | --- |
+| 1 | 1 | `p` boolean | On/off light |
+| 2 | 2054 | `p` boolean | On/off fan |
+| 6 | 2056 | `t` / 100 | Temperature, °C, read-only |
+| 7 | 2057 | `h` / 100 | Humidity, %, read-only |
+
+Discovery from pushes requires this product, endpoint number, type and a valid
+primary value. Unknown product types, other cabinet endpoints, speed `lv` and
+direction `dir` are not promoted to controls. The common low 56 bits identify
+one physical cabinet device; full 64-bit endpoint IDs remain distinct for
+entities and commands. This follows the virtual-ID layout observed for this
+product, rather than truncating command targets or grouping unrelated products.
+
+This extension has app-to-LAN observation evidence, not a complete firmware
+specification. No extra control commands are inferred from raw property names.
+
+## Migration and coexistence
 
 Back up the old component and HA registries. Keep existing Matter/native
 pairings until each new capability is validated. Existing mesh-device entity

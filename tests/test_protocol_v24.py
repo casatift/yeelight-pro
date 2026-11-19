@@ -9,12 +9,18 @@ from custom_components.yeelight_pro.core.device import (
     XDevice, LightDevice, RelayDoubleDevice, SwitchPanelDevice, MotionDevice,
     ContactDevice, CoverDevice, ClimateDevice, TemperatureHumidityDevice,
     IlluminanceDevice, BathHeaterDevice, TofDevice,
+    CabinetEndpointDevice,
 )
 from custom_components.yeelight_pro.core.protocol import validate_command, validate_property
 from custom_components.yeelight_pro.cover import XCoverEntity
 from custom_components.yeelight_pro.climate import XClimateEntity
 from custom_components.yeelight_pro.light import XLightEntity
 from custom_components.yeelight_pro.select import XSelectEntity
+from custom_components.yeelight_pro.fan import XFanEntity
+from custom_components.yeelight_pro.sensor import XSensorEntity
+from custom_components.yeelight_pro.core.cabinet import CABINET_PID
+from homeassistant.components.fan import FanEntityFeature
+from homeassistant.components.light import ColorMode
 
 
 class DeviceTests(unittest.IsolatedAsyncioTestCase):
@@ -146,6 +152,107 @@ class DeviceTests(unittest.IsolatedAsyncioTestCase):
         d.set_prop = accepted
         await entity.async_turn_on()
         self.assertFalse(entity.is_on)
+
+
+def cabinet_node(channel, pt, params, **kwargs):
+    # Synthetic physical ID; virtual endpoints follow the observed product layout.
+    return {'id': (channel << 56) | 321, 'nt': 2, 'pid': CABINET_PID,
+            'pt': pt, 'n': f'Fixture cabinet-{channel}', 'params': params, 'o': True, **kwargs}
+
+
+class CabinetTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self):
+        self.g = ProGateway('127.0.0.1')
+
+    async def push(self, nodes):
+        await self.g.on_message({'method': 'gateway_post.prop', 'nodes': nodes})
+
+    async def test_verified_pushes_share_one_physical_device(self):
+        await self.push([cabinet_node(1, 1, {'p': False}),
+            cabinet_node(2, 2054, {'p': False, 'lv': 60, 'dir': 0}),
+            cabinet_node(6, 2056, {'t': 2690}), cabinet_node(7, 2057, {'h': 2380})])
+        devices = [d for d in self.g.devices.values() if isinstance(d, CabinetEndpointDevice)]
+        self.assertEqual(len(devices), 4)
+        entities = []
+        for d in devices:
+            conv = next(iter(d.converters.values()))
+            cls = {'light': XLightEntity, 'fan': XFanEntity,
+                   'temperature': XSensorEntity, 'humidity': XSensorEntity}[d.cabinet_kind]
+            entities.append(cls(d, conv))
+        self.assertEqual({next(iter(e.device_info['identifiers'])) for e in entities},
+                         {('yeelight_pro', 'cabinet_321')})
+        self.assertEqual({e.device_info['name'] for e in entities}, {'Fixture cabinet'})
+        self.assertEqual(len({e.unique_id for e in entities}), 4)
+        self.assertEqual(len({e.entity_id for e in entities}), 4)
+        self.assertEqual(entities[0].supported_color_modes, {ColorMode.ONOFF})
+        self.assertEqual(entities[1].supported_features,
+                         FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF)
+        self.assertEqual(set(devices[1].converters), {'fan'})
+
+    async def test_temperature_humidity_scaling_and_readonly(self):
+        await self.push([cabinet_node(6, 2056, {'t': 2690}), cabinet_node(7, 2057, {'h': 2380})])
+        t, h = self.g.devices[(6 << 56) | 321], self.g.devices[(7 << 56) | 321]
+        self.assertAlmostEqual(t.decode({'params': {'t': 2690}})['temperature'], 26.9)
+        self.assertAlmostEqual(h.decode({'params': {'h': 2380}})['humidity'], 23.8)
+        self.assertIsNone(h.decode({'params': {'h': None}})['humidity'])
+        for d, attr in ((t, 'temperature'), (h, 'humidity')):
+            with self.assertRaises(ValueError):
+                d.encode({attr: 30})
+        # Ordinary type 136 humidity semantics are unchanged.
+        ordinary = await XDevice.from_node(self.g, {'id': 99, 'nt': 2, 'type': 136})
+        self.assertEqual(ordinary.decode({'params': {'h': 42}})['humidity'], 42)
+
+    async def test_unknown_products_channels_types_and_malformed_values_ignored(self):
+        for node in [cabinet_node(2, 2054, {'p': True}, pid=999),
+            cabinet_node(3, 2050, {}), cabinet_node(8, 130, {'dc': True}),
+            cabinet_node(2, 1, {'p': True}), cabinet_node(6, 2056, {}),
+            cabinet_node(2, 2054, {'p': 1}), cabinet_node(7, 2057, {'h': 10001}),
+            cabinet_node(6, 2056, {'t': float('nan')})]:
+            await self.push([node])
+        self.assertFalse(any(isinstance(d, CabinetEndpointDevice) for d in self.g.devices.values()))
+
+    async def test_sparse_push_updates_existing_endpoint_without_duplicate(self):
+        await self.push([cabinet_node(2, 2054, {'p': False})])
+        nid = (2 << 56) | 321
+        d = self.g.devices[nid]
+        await self.push([{'id': nid, 'nt': 2, 'params': {'p': True}}])
+        self.assertIs(self.g.devices[nid], d)
+        self.assertTrue(d.prop_params['p'])
+        self.assertEqual(len([x for x in self.g.devices.values() if isinstance(x, CabinetEndpointDevice)]), 1)
+
+    async def test_fan_uses_exact_virtual_id_and_only_power_no_optimism(self):
+        await self.push([cabinet_node(2, 2054, {'p': False})])
+        d = self.g.devices[(2 << 56) | 321]
+        entity = XFanEntity(d, d.converters['fan'])
+        entity.async_set_state({'fan': False})
+        requests = []
+        async def accepted(method, **kwargs):
+            requests.append((method, kwargs))
+            validate_command(method, kwargs)
+            return {'result': 'ok'}
+        self.g.send = accepted
+        await entity.async_turn_on()
+        self.assertFalse(entity.is_on)
+        await entity.async_turn_off()
+        self.assertEqual(requests, [('gateway_set.prop', {'nodes': [{'id': (2 << 56) | 321, 'nt': 2, 'set': {'p': True}}]}),
+                                    ('gateway_set.prop', {'nodes': [{'id': (2 << 56) | 321, 'nt': 2, 'set': {'p': False}}]})])
+        with self.assertRaises(ValueError):
+            await entity.async_turn_on(percentage=50)
+        self.assertEqual(len(requests), 2)
+
+    async def test_reconnect_requires_new_primary_observation(self):
+        await self.push([cabinet_node(2, 2054, {'p': False})])
+        d = self.g.devices[(2 << 56) | 321]
+        entity = XFanEntity(d, d.converters['fan'])
+        self.g.writer = SimpleNamespace(is_closing=lambda:False)
+        self.assertTrue(entity.available)
+        self.g.writer = None
+        await self.g._disconnect()
+        self.g.writer = SimpleNamespace(is_closing=lambda:False)
+        await self.push([{'id': d.id, 'nt': 2, 'o': True}])
+        self.assertFalse(entity.available)
+        await self.push([{'id': d.id, 'nt': 2, 'params': {'p': False}}])
+        self.assertTrue(entity.available)
 
 
 class ValidationTests(unittest.TestCase):

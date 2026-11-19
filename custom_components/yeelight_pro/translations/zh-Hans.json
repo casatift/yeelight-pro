@@ -30,5 +30,25 @@
     "error": {
       "cannot_access": "无法访问网关"
     }
+  },
+  "entity": {
+    "light": {
+      "light": {
+        "name": "灯"
+      }
+    },
+    "fan": {
+      "fan": {
+        "name": "风扇"
+      }
+    },
+    "sensor": {
+      "temperature": {
+        "name": "温度"
+      },
+      "humidity": {
+        "name": "湿度"
+      }
+    }
   }
 }

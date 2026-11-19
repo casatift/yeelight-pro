@@ -30,5 +30,25 @@
     "error": {
       "cannot_access": "Can't access the gateway"
     }
+  },
+  "entity": {
+    "light": {
+      "light": {
+        "name": "Light"
+      }
+    },
+    "fan": {
+      "fan": {
+        "name": "Fan"
+      }
+    },
+    "sensor": {
+      "temperature": {
+        "name": "Temperature"
+      },
+      "humidity": {
+        "name": "Humidity"
+      }
+    }
   }
 }

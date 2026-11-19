@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 - 2026-11-19
+
+- Add an observed smart low-voltage cabinet extension for product 17000064.
+  Its internal endpoints are omitted from topology and all-node queries, but
+  arrive in LAN property pushes. Admit only the verified product/channel/type
+  combinations and primary property values; keep other unknown endpoints out.
+- Group cabinet light, on/off fan, temperature and humidity into one physical
+  HA device while retaining full virtual IDs for commands and entity identity.
+- Scale cabinet temperature and humidity by 0.01, confirmed against its app.
+  Sensors are read-only. Fan speed/direction and other unverified endpoints
+  are intentionally not exposed. Power ACKs do not change reported state.
+- Add cabinet regression tests for grouping, virtual command routing, sparse
+  updates, invalid discovery data and availability after reconnect.
+
 ## 0.1.0 - 2026-11-19
 
 Maintenance fork of `hasscc/yeelight-pro`, based on commit

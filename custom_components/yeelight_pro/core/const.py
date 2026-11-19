@@ -5,6 +5,7 @@ CONF_GATEWAYS = 'gateways'
 CONF_PID = 'pid'
 
 SUPPORTED_DOMAINS = [
+    'fan',
     'button',
     'sensor',
     'switch',

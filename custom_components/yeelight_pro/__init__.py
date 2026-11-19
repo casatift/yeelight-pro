@@ -28,6 +28,7 @@ from homeassistant.exceptions import ConfigEntryNotReady
 from .core.const import *
 from .core.gateway import ProGateway
 from .core.device import XDevice, GatewayDevice, WifiPanelDevice
+from .core.device import CabinetEndpointDevice
 from .core.converters.base import Converter, PropConv
 
 _LOGGER = logging.getLogger(__name__)
@@ -286,13 +287,18 @@ class XEntity(Entity):
         self._attr_native_unit_of_measurement = conv.unit_of_measurement
         self._attr_entity_category = self._option.get('category')
         self._attr_translation_key = self._option.get('translation_key', conv.attr)
+        if isinstance(device, CabinetEndpointDevice):
+            self._attr_has_entity_name = True
+            self._attr_name = {'light': 'Light', 'fan': 'Fan',
+                               'temperature': 'Temperature', 'humidity': 'Humidity'}[conv.attr]
 
         via_device = None
         if not isinstance(device, (GatewayDevice, WifiPanelDevice)):
             via_device = getattr(device.gateway, 'device_registry_id', None)
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, str(device.id) if device.nt in (2, -1) else f'{device.nt}-{device.id}')},
-            name=device.name,
+            identifiers={(DOMAIN, device.physical_device_id if isinstance(device, CabinetEndpointDevice)
+                          else str(device.id) if device.nt in (2, -1) else f'{device.nt}-{device.id}')},
+            name=device.physical_device_name if isinstance(device, CabinetEndpointDevice) else device.name,
             model=str(device.pid or device.type or ''),
             via_device_id=via_device,
             sw_version=device.firmware_version,

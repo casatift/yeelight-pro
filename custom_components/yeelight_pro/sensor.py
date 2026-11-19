@@ -5,9 +5,11 @@ import asyncio
 from homeassistant.core import callback
 from homeassistant.components.sensor import (
     SensorEntity,
+    SensorStateClass,
     DOMAIN as ENTITY_DOMAIN,
 )
 from homeassistant.helpers.restore_state import RestoreEntity
+from .core.device import CabinetEndpointDevice
 
 from . import (
     XDevice,
@@ -40,6 +42,11 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 
 class XSensorEntity(XEntity, SensorEntity, RestoreEntity):
+
+    def __init__(self, device, conv, option=None):
+        super().__init__(device, conv, option)
+        if isinstance(device, CabinetEndpointDevice):
+            self._attr_state_class = SensorStateClass.MEASUREMENT
 
     @callback
     def async_set_state(self, data: dict):
