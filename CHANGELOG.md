@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2 - 2026-11-19
+
+- Fix cabinet fan appearing off after a real power-on report. The on/off-only
+  entity now reads boolean power directly instead of inheriting HA's default
+  speed/preset-based power inference. Unknown remains unknown; no speed is
+  fabricated. Adds a regression for app power pushes, sparse updates and state.
+
 ## 0.1.1 - 2026-11-19
 
 - Add an observed smart low-voltage cabinet extension for product 17000064.

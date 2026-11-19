@@ -254,6 +254,25 @@ class CabinetTests(unittest.IsolatedAsyncioTestCase):
         await self.push([{'id': d.id, 'nt': 2, 'params': {'p': False}}])
         self.assertTrue(entity.available)
 
+    async def test_app_power_push_controls_fan_state_without_speed(self):
+        await self.push([cabinet_node(2, 2054, {'p': False})])
+        d = self.g.devices[(2 << 56) | 321]
+        entity = XFanEntity(d, d.converters['fan'])
+        entity.async_set_state({'fan': False})
+        self.assertEqual(entity.state, 'off')
+        await self.push([{'id': d.id, 'nt': 2, 'params': {'p': True}}])
+        self.assertTrue(entity.is_on)
+        self.assertEqual(entity.state, 'on')
+        self.assertIsNone(entity.percentage)
+        # A sparse auxiliary update must not turn a running fan off.
+        await self.push([{'id': d.id, 'nt': 2, 'params': {'lv': 60}}])
+        self.assertEqual(entity.state, 'on')
+        await self.push([{'id': d.id, 'nt': 2, 'params': {'p': False}}])
+        self.assertEqual(entity.state, 'off')
+        await self.push([{'id': d.id, 'nt': 2, 'params': {'p': None}}])
+        self.assertIsNone(entity.is_on)
+        self.assertIsNone(entity.state)
+
 
 class ValidationTests(unittest.TestCase):
     def test_readonly_fields_never_written(self):

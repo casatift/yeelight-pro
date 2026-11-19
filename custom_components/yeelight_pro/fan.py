@@ -25,7 +25,14 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
 
 class XFanEntity(XEntity, FanEntity):
     _attr_is_on = None
+    _attr_percentage = None
     _attr_supported_features = FanEntityFeature.TURN_ON | FanEntityFeature.TURN_OFF
+
+    @property
+    def is_on(self):
+        # FanEntity otherwise infers power from percentage/preset mode. This
+        # product has neither; its boolean LAN power report is authoritative.
+        return self._attr_is_on
 
     @callback
     def async_set_state(self, data):
