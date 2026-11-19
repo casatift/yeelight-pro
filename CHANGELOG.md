@@ -18,5 +18,7 @@ Maintenance fork of `hasscc/yeelight-pro`, based on commit
   EOF reconnection and availability after disconnection. Do not retry writes.
 - Use push observations for state instead of treating command ACK as actuation.
 - Add synthetic protocol and TCP tests, tested with HA 2026.11.2/Python 3.14.
+- Use native climate attributes and device-registry parent IDs; remove the
+  deprecated config-flow connection-class constant.
 
 This is protocol-level coverage. Untested hardware is not certified compatible.

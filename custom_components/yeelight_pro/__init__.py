@@ -144,6 +144,11 @@ async def get_gateway_from_config(hass, config, renew=False):
     if not gtw:
         gtw = ProGateway(host, **cfg)
         hass.data[DOMAIN][CONF_GATEWAYS][eid] = gtw
+        if cfg.get('pid', PID_GATEWAY) != PID_WIFI_PANEL and hass.config_entries.async_get_entry(eid):
+            gtw.device_registry_id = dr.async_get(hass).async_get_or_create(
+                config_entry_id=eid, identifiers={(DOMAIN, host)},
+                name=DEFAULT_NAME, manufacturer=DEFAULT_NAME, model='gateway',
+            ).id
     return gtw
 
 
@@ -284,12 +289,12 @@ class XEntity(Entity):
 
         via_device = None
         if not isinstance(device, (GatewayDevice, WifiPanelDevice)):
-            via_device = (DOMAIN, str(device.gateway.device.id if device.gateway.device else device.gateway.host))
+            via_device = getattr(device.gateway, 'device_registry_id', None)
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, str(device.id) if device.nt in (2, -1) else f'{device.nt}-{device.id}')},
             name=device.name,
             model=str(device.pid or device.type or ''),
-            via_device=via_device,
+            via_device_id=via_device,
             sw_version=device.firmware_version,
             manufacturer=DEFAULT_NAME,
         )
